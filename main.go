@@ -7,6 +7,7 @@ import (
 
 func main() {
 	serverMux := http.NewServeMux()
+	serverMux.Handle("/", http.FileServer(http.Dir(".")))
 
 	var server http.Server
 	server.Handler = serverMux
