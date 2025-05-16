@@ -32,15 +32,15 @@ func main() {
 		fileserverHits: new(atomic.Int32),
 	}
 
-	serverMux.HandleFunc("/reset/", func(w http.ResponseWriter, r *http.Request) {
+	serverMux.HandleFunc("POST /reset", func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.reset()
 		w.Write([]byte("hit counter has been reset"))
 	})
-	serverMux.HandleFunc("/metrics/", func(w http.ResponseWriter, r *http.Request) {
+	serverMux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		w.Write([]byte(apiCfg.showHits()))
 	})
-	serverMux.HandleFunc("/healthz/", func(responseWriter http.ResponseWriter, request *http.Request) {
+	serverMux.HandleFunc("GET /healthz", func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		responseWriter.Write([]byte("OK"))
 	})
