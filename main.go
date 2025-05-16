@@ -5,8 +5,29 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 )
+
+// func respondWithError(w http.ResponseWriter, code int, msg string) {
+
+// }
+
+// func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+
+// }
+
+func no_expletives(chirp string) string {
+	expletives := []string{"kerfuffle", "sharbert", "fornax"}
+	words := strings.Split(chirp, " ")
+	for x, word := range words {
+		if slices.Contains(expletives, strings.ToLower(word)) {
+			words[x] = "****"
+		}
+	}
+	return strings.Join(words, " ")
+}
 
 type apiConfig struct {
 	fileserverHits *atomic.Int32
@@ -18,10 +39,6 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
-// func (cfg *apiConfig) showHits() string {
-// 	return fmt.Sprintf("Hits: %v", cfg.fileserverHits.Load())
-// }
 
 func (cfg *apiConfig) reset() {
 	cfg.fileserverHits.Store(0)
@@ -49,6 +66,7 @@ func main() {
 			</html>`,
 			apiCfg.fileserverHits.Load())
 	})
+
 	serverMux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
 			Body string `json:"body"`
@@ -64,23 +82,23 @@ func main() {
 		}
 
 		type response struct {
-			Valid bool   `json:"valid"`
-			Error string `json:"error"`
+			Cleaned_Body string `json:"cleaned_body"`
+			Error        string `json:"error"`
 		}
-		var statusCode int
 
 		var responseBody response
+		var statusCode int
 
 		if len(params.Body) > 140 {
 			responseBody = response{
-				Valid: false,
-				Error: "Chirp was too long",
+				Cleaned_Body: params.Body,
+				Error:        "Chirp was too long",
 			}
 			statusCode = 400
 		} else {
 			responseBody = response{
-				Valid: true,
-				Error: "",
+				Cleaned_Body: no_expletives(params.Body),
+				Error:        "",
 			}
 			statusCode = 200
 		}
@@ -99,6 +117,7 @@ func main() {
 		responseWriter.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		responseWriter.Write([]byte("OK"))
 	})
+
 	serverMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir("./app")))))
 
 	server := &http.Server{
