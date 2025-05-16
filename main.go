@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -47,6 +48,52 @@ func main() {
 				</body>
 			</html>`,
 			apiCfg.fileserverHits.Load())
+	})
+	serverMux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+		type parameters struct {
+			Body string `json:"body"`
+		}
+
+		decoder := json.NewDecoder(r.Body)
+		params := parameters{}
+
+		if decodingError := decoder.Decode(&params); decodingError != nil {
+			log.Printf("Error decoding parameters: %s", decodingError)
+			w.WriteHeader(500)
+			return
+		}
+
+		type response struct {
+			Valid bool   `json:"valid"`
+			Error string `json:"error"`
+		}
+		var statusCode int
+
+		var responseBody response
+
+		if len(params.Body) > 140 {
+			responseBody = response{
+				Valid: false,
+				Error: "Chirp was too long",
+			}
+			statusCode = 400
+		} else {
+			responseBody = response{
+				Valid: true,
+				Error: "",
+			}
+			statusCode = 200
+		}
+
+		data, jsonError := json.Marshal(responseBody)
+		if jsonError != nil {
+			log.Printf("Error marshalling JSON %s", jsonError)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		w.Write(data)
+
 	})
 	serverMux.HandleFunc("GET /api/healthz", func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.Header().Add("Content-Type", "text/plain; charset=utf-8")
