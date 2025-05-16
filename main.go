@@ -18,9 +18,9 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
-func (cfg *apiConfig) showHits() string {
-	return fmt.Sprintf("Hits: %v", cfg.fileserverHits.Load())
-}
+// func (cfg *apiConfig) showHits() string {
+// 	return fmt.Sprintf("Hits: %v", cfg.fileserverHits.Load())
+// }
 
 func (cfg *apiConfig) reset() {
 	cfg.fileserverHits.Store(0)
@@ -32,13 +32,21 @@ func main() {
 		fileserverHits: new(atomic.Int32),
 	}
 
-	serverMux.HandleFunc("POST /api/reset", func(w http.ResponseWriter, r *http.Request) {
+	serverMux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.reset()
 		w.Write([]byte("hit counter has been reset"))
 	})
-	serverMux.HandleFunc("GET /api/metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(apiCfg.showHits()))
+	serverMux.HandleFunc("GET /admin/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(
+			w,
+			`<html>
+				<body>
+					<h1>Welcome, Chirpy Admin</h1>
+					<p>Chirpy has been visited %d times!</p>
+				</body>
+			</html>`,
+			apiCfg.fileserverHits.Load())
 	})
 	serverMux.HandleFunc("GET /api/healthz", func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.Header().Add("Content-Type", "text/plain; charset=utf-8")
