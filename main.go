@@ -44,6 +44,14 @@ func (cfg *apiConfig) reset() {
 	cfg.fileserverHits.Store(0)
 }
 
+// Logging middleware for future use
+// func middlewareLog(next http.Handler) http.Handler {
+// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// 		log.Printf("%s %s", r.Method, r.URL.Path)
+// 		next.ServeHTTP(w, r)
+// 	})
+// }
+
 func main() {
 	serverMux := http.NewServeMux()
 	apiCfg := &apiConfig{
