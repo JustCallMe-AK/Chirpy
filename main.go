@@ -1,13 +1,19 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/JustCallMe-AK/Chirpy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 // func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -31,6 +37,7 @@ func no_expletives(chirp string) string {
 
 type apiConfig struct {
 	fileserverHits *atomic.Int32
+	dbQueries      *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -53,9 +60,19 @@ func (cfg *apiConfig) reset() {
 // }
 
 func main() {
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, databaseConnectionOpenError := sql.Open("postgres", dbURL)
+	if databaseConnectionOpenError != nil {
+		log.Fatal("error opening connection to database: %w", databaseConnectionOpenError)
+	}
+	defer db.Close()
+	dbQueries := database.New(db)
+
 	serverMux := http.NewServeMux()
 	apiCfg := &apiConfig{
 		fileserverHits: new(atomic.Int32),
+		dbQueries:      dbQueries,
 	}
 
 	serverMux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +97,7 @@ func main() {
 			Body string `json:"body"`
 		}
 
+		// Decode JSON Request Body
 		decoder := json.NewDecoder(r.Body)
 		params := parameters{}
 
@@ -89,6 +107,7 @@ func main() {
 			return
 		}
 
+		// Encode JSON Response Body
 		type response struct {
 			Cleaned_Body string `json:"cleaned_body"`
 			Error        string `json:"error"`
@@ -116,6 +135,7 @@ func main() {
 			log.Printf("Error marshalling JSON %s", jsonError)
 		}
 
+		// Send JSON Response Body
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(statusCode)
 		w.Write(data)
