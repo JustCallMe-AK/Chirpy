@@ -10,8 +10,10 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/JustCallMe-AK/Chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -38,6 +40,14 @@ func no_expletives(chirp string) string {
 type apiConfig struct {
 	fileserverHits *atomic.Int32
 	dbQueries      *database.Queries
+	platform       string
+}
+
+type jsonUser struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -62,6 +72,7 @@ func (cfg *apiConfig) reset() {
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
 	db, databaseConnectionOpenError := sql.Open("postgres", dbURL)
 	if databaseConnectionOpenError != nil {
 		log.Fatal("error opening connection to database: %w", databaseConnectionOpenError)
@@ -73,11 +84,21 @@ func main() {
 	apiCfg := &apiConfig{
 		fileserverHits: new(atomic.Int32),
 		dbQueries:      dbQueries,
+		platform:       platform,
 	}
 
 	serverMux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
-		apiCfg.reset()
-		w.Write([]byte("hit counter has been reset"))
+		if apiCfg.platform != "dev" {
+			http.Error(w, "403 Forbidden", http.StatusForbidden)
+			return
+		} else if usersDeletionError := apiCfg.dbQueries.DeleteUsers(r.Context()); usersDeletionError != nil {
+			log.Printf("error deleting users: %v\n", usersDeletionError)
+			http.Error(w, "Failed to reset", http.StatusInternalServerError)
+			return
+		} else {
+			apiCfg.reset()
+			w.Write([]byte("hit counter has been reset and all users have been deleted"))
+		}
 	})
 	serverMux.HandleFunc("GET /admin/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Content-Type", "text/html; charset=utf-8")
@@ -91,7 +112,6 @@ func main() {
 			</html>`,
 			apiCfg.fileserverHits.Load())
 	})
-
 	serverMux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
 			Body string `json:"body"`
@@ -139,13 +159,53 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(statusCode)
 		w.Write(data)
-
 	})
 	serverMux.HandleFunc("GET /api/healthz", func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		responseWriter.Write([]byte("OK"))
 	})
+	serverMux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
+		type parameters struct {
+			Email string `json:"email"`
+		}
 
+		// Decode JSON Body
+		decoder := json.NewDecoder(r.Body)
+		params := parameters{}
+		if decodingError := decoder.Decode(&params); decodingError != nil {
+			log.Printf("failure to decode JSON body: %s", decodingError)
+			w.WriteHeader(500)
+			return
+		}
+
+		// Create new user
+		newUser, userCreationError := apiCfg.dbQueries.CreateUser(r.Context(), params.Email)
+		if userCreationError != nil {
+			log.Printf("failure to create new user: %s", userCreationError)
+			w.WriteHeader(500)
+			return
+		}
+
+		responseUser := &jsonUser{
+			ID:        newUser.ID,
+			CreatedAt: newUser.CreatedAt,
+			UpdatedAt: newUser.UpdatedAt,
+			Email:     newUser.Email,
+		}
+
+		// Encode JSON Response
+		data, jsonResponseError := json.Marshal(responseUser)
+		if jsonResponseError != nil {
+			log.Printf("failure to encode JSON response: %s", jsonResponseError)
+			w.WriteHeader(500)
+			return
+		}
+
+		// Send JSON Response Body
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(201)
+		w.Write(data)
+	})
 	serverMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir("./app")))))
 
 	server := &http.Server{
