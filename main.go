@@ -120,6 +120,68 @@ func main() {
 			</html>`,
 			apiCfg.fileserverHits.Load())
 	})
+	serverMux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		chirps, chipGatheringError := apiCfg.dbQueries.GetAllChirps(r.Context())
+		if chipGatheringError != nil {
+			log.Printf("failure to get all chirps: %s", chipGatheringError)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		jsonChirps := make([]jsonChirp, len(chirps))
+		for idx, chirp := range chirps {
+			jsonChirps[idx] = jsonChirp{
+				ID:        chirp.ID,
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body:      chirp.Body,
+				UserID:    chirp.UserID,
+			}
+		}
+
+		data, jsonEncodingError := json.Marshal(jsonChirps)
+		if jsonEncodingError != nil {
+			log.Printf("failure to encode JSON response: %s", jsonEncodingError)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(data))
+	})
+	serverMux.HandleFunc("GET /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
+		chirpID, uuidParseError := uuid.Parse(r.PathValue("chirpID"))
+		if uuidParseError != nil {
+			log.Printf("failure to parse for UUID: %s", uuidParseError)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		desiredChirp, chirpFetchError := apiCfg.dbQueries.GetChirp(r.Context(), chirpID)
+		if chirpFetchError != nil {
+			log.Printf("failure to fetch chirp: %s", chirpFetchError)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		data, jsonEncodingError := json.Marshal(jsonChirp{
+			ID:        desiredChirp.ID,
+			CreatedAt: desiredChirp.CreatedAt,
+			UpdatedAt: desiredChirp.UpdatedAt,
+			Body:      desiredChirp.Body,
+			UserID:    desiredChirp.UserID,
+		})
+		if jsonEncodingError != nil {
+			log.Printf("failure to properly encode response: %s", jsonEncodingError)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(data)
+	})
 	serverMux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
 			Body   string    `json:"body"`
