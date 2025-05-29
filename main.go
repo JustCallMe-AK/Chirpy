@@ -50,6 +50,14 @@ type jsonUser struct {
 	Email     string    `json:"email"`
 }
 
+type jsonChirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -112,9 +120,10 @@ func main() {
 			</html>`,
 			apiCfg.fileserverHits.Load())
 	})
-	serverMux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+	serverMux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Body string `json:"body"`
+			Body   string    `json:"body"`
+			UserID uuid.UUID `json:"user_id"`
 		}
 
 		// Decode JSON Request Body
@@ -127,37 +136,42 @@ func main() {
 			return
 		}
 
-		// Encode JSON Response Body
-		type response struct {
-			Cleaned_Body string `json:"cleaned_body"`
-			Error        string `json:"error"`
-		}
-
-		var responseBody response
-		var statusCode int
-
+		// Length validation
 		if len(params.Body) > 140 {
-			responseBody = response{
-				Cleaned_Body: params.Body,
-				Error:        "Chirp was too long",
-			}
-			statusCode = 400
-		} else {
-			responseBody = response{
-				Cleaned_Body: no_expletives(params.Body),
-				Error:        "",
-			}
-			statusCode = 200
+			log.Printf("Chirp was too long")
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
 
-		data, jsonError := json.Marshal(responseBody)
+		// Create new Chirp
+		newChirp, chirpCreationError := apiCfg.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{
+			Body:   params.Body,
+			UserID: params.UserID,
+		})
+		if chirpCreationError != nil {
+			log.Printf("failure to create new chirp: %s", chirpCreationError)
+			w.WriteHeader(500)
+			return
+		}
+
+		// Create server response
+		responseChirp := &jsonChirp{
+			ID:        newChirp.ID,
+			CreatedAt: newChirp.CreatedAt,
+			UpdatedAt: newChirp.UpdatedAt,
+			Body:      no_expletives(newChirp.Body),
+			UserID:    newChirp.UserID,
+		}
+
+		// Encode JSON Response Body
+		data, jsonError := json.Marshal(responseChirp)
 		if jsonError != nil {
 			log.Printf("Error marshalling JSON %s", jsonError)
 		}
 
 		// Send JSON Response Body
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
+		w.WriteHeader(http.StatusCreated)
 		w.Write(data)
 	})
 	serverMux.HandleFunc("GET /api/healthz", func(responseWriter http.ResponseWriter, request *http.Request) {
