@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/JustCallMe-AK/Chirpy/internal/auth"
 	"github.com/JustCallMe-AK/Chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -240,9 +241,56 @@ func main() {
 		responseWriter.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		responseWriter.Write([]byte("OK"))
 	})
+	serverMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+		type parameters struct {
+			Password string `json:"password"`
+			Email    string `json:"email"`
+		}
+
+		// Decode Request Body
+		decoder := json.NewDecoder(r.Body)
+		params := &parameters{}
+		if decodingError := decoder.Decode(&params); decodingError != nil {
+			log.Printf("failure to decode JSON body: %s", decodingError)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		// Retrieve user credentials
+		user, userFetchingError := apiCfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
+		if userFetchingError != nil {
+			log.Printf("failure to fetch user credentials: %s", userFetchingError)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("incorrect email or password"))
+		}
+
+		// Compare hash of submitted password with retrieved hashed password
+		if hashesMatch := auth.CheckPasswordHash(user.HashedPassword, params.Password); hashesMatch != nil {
+			log.Printf("hashed passwords do not match: %s", hashesMatch)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("incorrect email or password"))
+		}
+
+		data, jsonEncodingError := json.Marshal(jsonUser{
+			ID:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		})
+		if jsonEncodingError != nil {
+			log.Printf("failure to encode JSON response: %s", jsonEncodingError)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		// Send JSON Response Body
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	})
 	serverMux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Email string `json:"email"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
 		}
 
 		// Decode JSON Body
@@ -250,15 +298,24 @@ func main() {
 		params := parameters{}
 		if decodingError := decoder.Decode(&params); decodingError != nil {
 			log.Printf("failure to decode JSON body: %s", decodingError)
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		// Create new user
-		newUser, userCreationError := apiCfg.dbQueries.CreateUser(r.Context(), params.Email)
+		hashedPassword, hashingError := auth.HashedPassword(params.Password)
+		if hashingError != nil {
+			log.Printf("failure to hash submitted password: %s", hashingError)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		newUser, userCreationError := apiCfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams{
+			Email:          params.Email,
+			HashedPassword: hashedPassword,
+		})
 		if userCreationError != nil {
 			log.Printf("failure to create new user: %s", userCreationError)
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
@@ -273,13 +330,13 @@ func main() {
 		data, jsonResponseError := json.Marshal(responseUser)
 		if jsonResponseError != nil {
 			log.Printf("failure to encode JSON response: %s", jsonResponseError)
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		// Send JSON Response Body
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(201)
+		w.WriteHeader(http.StatusCreated)
 		w.Write(data)
 	})
 	serverMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir("./app")))))
