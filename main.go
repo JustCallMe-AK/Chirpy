@@ -442,6 +442,61 @@ func main() {
 		w.WriteHeader(http.StatusCreated)
 		w.Write(data)
 	})
+	serverMux.HandleFunc("PUT /api/users", func(w http.ResponseWriter, r *http.Request) {
+		// Step 1: Extract and validate access token
+		tokenString, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			http.Error(w, "missing or invalid Authorization header", http.StatusUnauthorized)
+			return
+		}
+		userID, err := auth.ValidateJWT(tokenString, apiCfg.secret)
+		if err != nil {
+			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
+			return
+		}
+
+		// Step 2: Parse request body
+		type parameters struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		var params parameters
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&params); err != nil {
+			http.Error(w, "failed to parse request body", http.StatusBadRequest)
+			return
+		}
+
+		// Step 3: Hash the new password
+		hashedPassword, err := auth.HashedPassword(params.Password)
+		if err != nil {
+			http.Error(w, "failed to hash password", http.StatusInternalServerError)
+			return
+		}
+
+		// Step 4: Update the user in the DB
+		updatedUser, err := apiCfg.dbQueries.UpdateUserByID(r.Context(), database.UpdateUserByIDParams{
+			Email:          params.Email,
+			HashedPassword: hashedPassword,
+			ID:             userID,
+		})
+		if err != nil {
+			http.Error(w, "failed to update user", http.StatusInternalServerError)
+			return
+		}
+
+		// Step 5: Return updated user (without password)
+		response := jsonUser{
+			ID:        updatedUser.ID,
+			CreatedAt: updatedUser.CreatedAt,
+			UpdatedAt: updatedUser.UpdatedAt,
+			Email:     updatedUser.Email,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
+	})
+
 	serverMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir("./app")))))
 
 	server := &http.Server{
