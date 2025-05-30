@@ -44,6 +44,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	platform       string
 	secret         string
+	polkaKey       string
 }
 
 type jsonUser struct {
@@ -83,22 +84,19 @@ func (cfg *apiConfig) reset() {
 
 func main() {
 	godotenv.Load()
-	dbURL := os.Getenv("DB_URL")
-	platform := os.Getenv("PLATFORM")
-	secret := os.Getenv("SECRET")
-	db, databaseConnectionOpenError := sql.Open("postgres", dbURL)
+	db, databaseConnectionOpenError := sql.Open("postgres", os.Getenv("DB_URL"))
 	if databaseConnectionOpenError != nil {
 		log.Fatal("error opening connection to database: %w", databaseConnectionOpenError)
 	}
 	defer db.Close()
-	dbQueries := database.New(db)
 
 	serverMux := http.NewServeMux()
 	apiCfg := &apiConfig{
 		fileserverHits: new(atomic.Int32),
-		dbQueries:      dbQueries,
-		platform:       platform,
-		secret:         secret,
+		dbQueries:      database.New(db),
+		platform:       os.Getenv("PLATFORM"),
+		secret:         os.Getenv("SECRET"),
+		polkaKey:       os.Getenv("POLKA_KEY"),
 	}
 
 	// Admin
@@ -554,6 +552,11 @@ func main() {
 
 	// Webhooks
 	serverMux.HandleFunc("POST /api/polka/webhooks", func(w http.ResponseWriter, r *http.Request) {
+		apiKey, err := auth.GetAPIKey(r.Header)
+		if err != nil || apiKey != apiCfg.polkaKey {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		type webhookData struct {
 			Event string `json:"event"`
 			Data  struct {
@@ -572,15 +575,10 @@ func main() {
 			return
 		}
 
-		err := apiCfg.dbQueries.UpgradeUserToChirpyRed(r.Context(), payload.Data.UserID)
-		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "user not found", http.StatusNotFound)
-			return
-		} else if err != nil {
+		if err := apiCfg.dbQueries.UpgradeUserToChirpyRed(r.Context(), payload.Data.UserID); err != nil {
 			http.Error(w, "failed to upgrade user", http.StatusInternalServerError)
 			return
 		}
-
 		w.WriteHeader(http.StatusNoContent)
 	})
 
