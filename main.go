@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -129,6 +130,7 @@ func main() {
 	// Chirps
 	serverMux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		authorIDParam := r.URL.Query().Get("author_id")
+		sortParam := strings.ToLower(r.URL.Query().Get("sort"))
 
 		var chirps []database.Chirp
 		var chipGatheringError error
@@ -147,6 +149,18 @@ func main() {
 			log.Printf("failure to get all chirps: %s", chipGatheringError)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
+		}
+
+		// 🧭 Sort in-memory
+		switch sortParam {
+		case "desc":
+			sort.Slice(chirps, func(i, j int) bool {
+				return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+			})
+		default: // "asc" or empty
+			sort.Slice(chirps, func(i, j int) bool {
+				return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+			})
 		}
 
 		jsonChirps := make([]jsonChirp, len(chirps))
