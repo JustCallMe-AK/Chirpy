@@ -124,6 +124,7 @@ func main() {
 			</html>`,
 			apiCfg.fileserverHits.Load())
 	})
+
 	serverMux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		chirps, chipGatheringError := apiCfg.dbQueries.GetAllChirps(r.Context())
 		if chipGatheringError != nil {
@@ -255,15 +256,16 @@ func main() {
 		w.WriteHeader(http.StatusCreated)
 		w.Write(data)
 	})
+
 	serverMux.HandleFunc("GET /api/healthz", func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		responseWriter.Write([]byte("OK"))
 	})
+
 	serverMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Password         string `json:"password"`
-			Email            string `json:"email"`
-			ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
+			Password string `json:"password"`
+			Email    string `json:"email"`
 		}
 
 		// Decode Request Body
@@ -290,28 +292,43 @@ func main() {
 			w.Write([]byte("incorrect email or password"))
 		}
 
-		// Determine expiration time
-		expiration := time.Hour // default
-		if params.ExpiresInSeconds > 0 {
-			if params.ExpiresInSeconds < 3600 {
-				expiration = time.Duration(params.ExpiresInSeconds) * time.Second
-			}
-		}
-
 		// Generate JWT
-		token, err := auth.MakeJWT(user.ID, apiCfg.secret, expiration)
+		token, err := auth.MakeJWT(user.ID, apiCfg.secret, time.Hour)
 		if err != nil {
 			log.Printf("failed to make JWT: %s", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
+		// Create refresh token (60 days)
+		refreshToken, err := auth.MakeRefreshToken()
+		if err != nil {
+			http.Error(w, "failed to generate refresh token", http.StatusInternalServerError)
+			return
+		}
+		now := time.Now().UTC()
+		expiresAt := now.Add(60 * 24 * time.Hour) // 60 days
+
+		// Store refresh token in database
+		if _, err := apiCfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+			Token:     refreshToken,
+			UserID:    user.ID,
+			CreatedAt: now,
+			UpdatedAt: now,
+			ExpiresAt: expiresAt,
+			RevokedAt: sql.NullTime{Valid: false}, // NULL on creation
+		}); err != nil {
+			http.Error(w, "failed to store refresh token", http.StatusInternalServerError)
+			return
+		}
+
 		data, jsonEncodingError := json.Marshal(map[string]interface{}{
-			"id":         user.ID,
-			"created_at": user.CreatedAt,
-			"updated_at": user.UpdatedAt,
-			"eamil":      user.Email,
-			"token":      token,
+			"id":            user.ID,
+			"created_at":    user.CreatedAt,
+			"updated_at":    user.UpdatedAt,
+			"eamil":         user.Email,
+			"token":         token,
+			"refresh_token": refreshToken,
 		})
 		if jsonEncodingError != nil {
 			log.Printf("failure to encode JSON response: %s", jsonEncodingError)
@@ -323,6 +340,56 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(data)
 	})
+	serverMux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
+		type response struct {
+			Token string `json:"token"`
+		}
+
+		// Step 1: Extract token
+		rawToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			http.Error(w, "missing or invalid Authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		// Step 2: Query user from refresh token
+		user, err := apiCfg.dbQueries.GetUserFromRefreshToken(r.Context(), rawToken)
+		if err != nil {
+			http.Error(w, "invalid or expired refresh token", http.StatusUnauthorized)
+			return
+		}
+
+		// Step 3: Generate new access token
+		accessToken, err := auth.MakeJWT(user.ID, apiCfg.secret, time.Hour)
+		if err != nil {
+			http.Error(w, "could not create access token", http.StatusInternalServerError)
+			return
+		}
+
+		// Step 4: Respond with new token
+		resp := response{Token: accessToken}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+	serverMux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
+		// Step 1: Extract token
+		refreshToken, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			http.Error(w, "missing or invalid Authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		// Step 2: Attempt revocation
+		err = apiCfg.dbQueries.RevokeRefreshToken(r.Context(), refreshToken)
+		if err != nil {
+			http.Error(w, "failed to revoke refresh token", http.StatusUnauthorized)
+			return
+		}
+
+		// Step 3: Respond with 204 No Content
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	serverMux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
 			Email    string `json:"email"`
