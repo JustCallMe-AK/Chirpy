@@ -128,7 +128,21 @@ func main() {
 
 	// Chirps
 	serverMux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		chirps, chipGatheringError := apiCfg.dbQueries.GetAllChirps(r.Context())
+		authorIDParam := r.URL.Query().Get("author_id")
+
+		var chirps []database.Chirp
+		var chipGatheringError error
+
+		if authorIDParam != "" {
+			authorID, parseErr := uuid.Parse(authorIDParam)
+			if parseErr != nil {
+				http.Error(w, "invalid author_id", http.StatusBadRequest)
+				return
+			}
+			chirps, chipGatheringError = apiCfg.dbQueries.GetChirpsByAuthor(r.Context(), authorID)
+		} else {
+			chirps, chipGatheringError = apiCfg.dbQueries.GetAllChirps(r.Context())
+		}
 		if chipGatheringError != nil {
 			log.Printf("failure to get all chirps: %s", chipGatheringError)
 			w.WriteHeader(http.StatusInternalServerError)
