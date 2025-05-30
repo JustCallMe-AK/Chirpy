@@ -47,10 +47,11 @@ type apiConfig struct {
 }
 
 type jsonUser struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 type jsonChirp struct {
@@ -376,7 +377,8 @@ func main() {
 			"id":            user.ID,
 			"created_at":    user.CreatedAt,
 			"updated_at":    user.UpdatedAt,
-			"eamil":         user.Email,
+			"email":         user.Email,
+			"is_chirpy_red": user.IsChirpyRed,
 			"token":         token,
 			"refresh_token": refreshToken,
 		})
@@ -474,10 +476,11 @@ func main() {
 		}
 
 		responseUser := &jsonUser{
-			ID:        newUser.ID,
-			CreatedAt: newUser.CreatedAt,
-			UpdatedAt: newUser.UpdatedAt,
-			Email:     newUser.Email,
+			ID:          newUser.ID,
+			CreatedAt:   newUser.CreatedAt,
+			UpdatedAt:   newUser.UpdatedAt,
+			Email:       newUser.Email,
+			IsChirpyRed: newUser.IsChirpyRed,
 		}
 
 		// Encode JSON Response
@@ -538,14 +541,47 @@ func main() {
 
 		// Step 5: Return updated user (without password)
 		response := jsonUser{
-			ID:        updatedUser.ID,
-			CreatedAt: updatedUser.CreatedAt,
-			UpdatedAt: updatedUser.UpdatedAt,
-			Email:     updatedUser.Email,
+			ID:          updatedUser.ID,
+			CreatedAt:   updatedUser.CreatedAt,
+			UpdatedAt:   updatedUser.UpdatedAt,
+			Email:       updatedUser.Email,
+			IsChirpyRed: updatedUser.IsChirpyRed,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(response)
+	})
+
+	// Webhooks
+	serverMux.HandleFunc("POST /api/polka/webhooks", func(w http.ResponseWriter, r *http.Request) {
+		type webhookData struct {
+			Event string `json:"event"`
+			Data  struct {
+				UserID uuid.UUID `json:"user_id"`
+			} `json:"data"`
+		}
+
+		var payload webhookData
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		if payload.Event != "user.upgraded" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		err := apiCfg.dbQueries.UpgradeUserToChirpyRed(r.Context(), payload.Data.UserID)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, "failed to upgrade user", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	serverMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir("./app")))))
