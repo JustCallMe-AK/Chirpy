@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -99,6 +100,7 @@ func main() {
 		secret:         secret,
 	}
 
+	// Admin
 	serverMux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
 		if apiCfg.platform != "dev" {
 			http.Error(w, "403 Forbidden", http.StatusForbidden)
@@ -125,6 +127,7 @@ func main() {
 			apiCfg.fileserverHits.Load())
 	})
 
+	// Chirps
 	serverMux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		chirps, chipGatheringError := apiCfg.dbQueries.GetAllChirps(r.Context())
 		if chipGatheringError != nil {
@@ -256,12 +259,59 @@ func main() {
 		w.WriteHeader(http.StatusCreated)
 		w.Write(data)
 	})
+	serverMux.HandleFunc("DELETE /api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
+		// Extract and validate the token
+		tokenString, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			http.Error(w, "missing or invalid Authorization header", http.StatusUnauthorized)
+			return
+		}
+		userID, err := auth.ValidateJWT(tokenString, apiCfg.secret)
+		if err != nil {
+			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
+			return
+		}
 
+		// Get chirp ID from the path
+		chirpID, uuidParseError := uuid.Parse(r.PathValue("chirpID"))
+		if uuidParseError != nil {
+			http.Error(w, "invalid chirp ID", http.StatusBadRequest)
+			return
+		}
+
+		// Fetch chirp to verify ownership
+		chirp, err := apiCfg.dbQueries.GetChirp(r.Context(), chirpID)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "chirp not found", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, "error fetching chirp", http.StatusInternalServerError)
+			return
+		}
+
+		// Check authorization
+		if chirp.UserID != userID {
+			http.Error(w, "forbidden: not the chirp author", http.StatusForbidden)
+			return
+		}
+
+		// Delete chirp
+		err = apiCfg.dbQueries.DeleteChirpByID(r.Context(), chirpID)
+		if err != nil {
+			http.Error(w, "failed to delete chirp", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Readiness endpoint
 	serverMux.HandleFunc("GET /api/healthz", func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		responseWriter.Write([]byte("OK"))
 	})
 
+	// Authentication
 	serverMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
 			Password string `json:"password"`
@@ -390,6 +440,7 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// Users
 	serverMux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
 			Email    string `json:"email"`
