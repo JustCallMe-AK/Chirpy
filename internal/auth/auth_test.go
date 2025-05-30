@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -55,5 +56,53 @@ func TestInvalidSignatureJWT(t *testing.T) {
 	_, err = ValidateJWT(token, wrongSecret)
 	if err == nil {
 		t.Fatal("expected error for token with invalid signature, got none")
+	}
+}
+
+func TestGetBearerToken(t *testing.T) {
+	tests := []struct {
+		name        string
+		headerValue string
+		expectError bool
+		expected    string
+	}{
+		{
+			name:        "valid token",
+			headerValue: "Bearer abc123",
+			expectError: false,
+			expected:    "abc123",
+		},
+		{
+			name:        "missing prefix",
+			headerValue: "Token abc123",
+			expectError: true,
+		},
+		{
+			name:        "empty token",
+			headerValue: "Bearer ",
+			expectError: true,
+		},
+		{
+			name:        "no header",
+			headerValue: "",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := http.Header{}
+			if tt.headerValue != "" {
+				headers.Set("Authorization", tt.headerValue)
+			}
+
+			token, err := GetBearerToken(headers)
+			if (err != nil) != tt.expectError {
+				t.Fatalf("expected error: %v, got: %v", tt.expectError, err)
+			}
+			if token != tt.expected {
+				t.Fatalf("expected token: %q, got: %q", tt.expected, token)
+			}
+		})
 	}
 }

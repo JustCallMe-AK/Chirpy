@@ -42,6 +42,7 @@ type apiConfig struct {
 	fileserverHits *atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	secret         string
 }
 
 type jsonUser struct {
@@ -82,6 +83,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	secret := os.Getenv("SECRET")
 	db, databaseConnectionOpenError := sql.Open("postgres", dbURL)
 	if databaseConnectionOpenError != nil {
 		log.Fatal("error opening connection to database: %w", databaseConnectionOpenError)
@@ -94,6 +96,7 @@ func main() {
 		fileserverHits: new(atomic.Int32),
 		dbQueries:      dbQueries,
 		platform:       platform,
+		secret:         secret,
 	}
 
 	serverMux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
@@ -185,14 +188,29 @@ func main() {
 	})
 	serverMux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Body   string    `json:"body"`
-			UserID uuid.UUID `json:"user_id"`
+			Body string `json:"body"`
 		}
 
+		// Extract Bearer token
+		tokenString, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			log.Printf("missing or invalid bearer token: %s", err)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("unauthorized"))
+			return
+		}
+
+		//  Validate JWT and extract user ID
+		userID, err := auth.ValidateJWT(tokenString, apiCfg.secret)
+		if err != nil {
+			log.Printf("invalid JWT: %s", err)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("unauthorized"))
+			return
+		}
 		// Decode JSON Request Body
 		decoder := json.NewDecoder(r.Body)
 		params := parameters{}
-
 		if decodingError := decoder.Decode(&params); decodingError != nil {
 			log.Printf("Error decoding parameters: %s", decodingError)
 			w.WriteHeader(500)
@@ -209,7 +227,7 @@ func main() {
 		// Create new Chirp
 		newChirp, chirpCreationError := apiCfg.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{
 			Body:   params.Body,
-			UserID: params.UserID,
+			UserID: userID,
 		})
 		if chirpCreationError != nil {
 			log.Printf("failure to create new chirp: %s", chirpCreationError)
@@ -243,8 +261,9 @@ func main() {
 	})
 	serverMux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type parameters struct {
-			Password string `json:"password"`
-			Email    string `json:"email"`
+			Password         string `json:"password"`
+			Email            string `json:"email"`
+			ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
 		}
 
 		// Decode Request Body
@@ -271,11 +290,28 @@ func main() {
 			w.Write([]byte("incorrect email or password"))
 		}
 
-		data, jsonEncodingError := json.Marshal(jsonUser{
-			ID:        user.ID,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
+		// Determine expiration time
+		expiration := time.Hour // default
+		if params.ExpiresInSeconds > 0 {
+			if params.ExpiresInSeconds < 3600 {
+				expiration = time.Duration(params.ExpiresInSeconds) * time.Second
+			}
+		}
+
+		// Generate JWT
+		token, err := auth.MakeJWT(user.ID, apiCfg.secret, expiration)
+		if err != nil {
+			log.Printf("failed to make JWT: %s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		data, jsonEncodingError := json.Marshal(map[string]interface{}{
+			"id":         user.ID,
+			"created_at": user.CreatedAt,
+			"updated_at": user.UpdatedAt,
+			"eamil":      user.Email,
+			"token":      token,
 		})
 		if jsonEncodingError != nil {
 			log.Printf("failure to encode JSON response: %s", jsonEncodingError)
